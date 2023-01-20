@@ -1,7 +1,7 @@
 
 // File: node_modules\openzeppelin-solidity\contracts\token\ERC20\IERC20.sol
 
-pragma solidity ^0.5.0;
+pragma solidity 0.5.8;
 
 /**
  * @dev Interface of the ERC20 standard as defined in the EIP. Does not include
@@ -80,7 +80,7 @@ interface IERC20 {
 
 // File: node_modules\openzeppelin-solidity\contracts\math\SafeMath.sol
 
-pragma solidity ^0.5.0;
+pragma solidity 0.5.8;
 
 /**
  * @dev Wrappers over Solidity's arithmetic operations with added overflow
@@ -190,7 +190,7 @@ library SafeMath {
 
 // File: node_modules\openzeppelin-solidity\contracts\token\ERC20\ERC20.sol
 
-pragma solidity ^0.5.0;
+pragma solidity 0.5.8;
 
 
 
@@ -405,17 +405,6 @@ contract ERC20 is IERC20 {
         _allowances[owner][spender] = value;
         emit Approval(owner, spender, value);
     }
-
-    /**
-     * @dev Destoys `amount` tokens from `account`.`amount` is then deducted
-     * from the caller's allowance.
-     *
-     * See `_burn` and `_approve`.
-     */
-    function _burnFrom(address account, uint256 amount) internal {
-        _burn(account, amount);
-        _approve(account, msg.sender, _allowances[account][msg.sender].sub(amount));
-    }
 }
 
 // File: contracts\Milo.sol
@@ -436,12 +425,11 @@ contract Milo is ERC20 {
 
     //ownership
     address public owner;
+    address public potentialOwner;
 
     event OwnershipRenounced(address indexed previousOwner);
-    event OwnershipTransferred(
-    address indexed previousOwner,
-    address indexed newOwner
-    );
+    event OwnerNominated(address indexed potentialOwner);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);    
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Not owner");
@@ -454,28 +442,30 @@ contract Milo is ERC20 {
    * It will not be possible to call the functions with the `onlyOwner`
    * modifier anymore.
    */
-    function renounceOwnership() public onlyOwner {
+    function renounceOwnership() external onlyOwner {
         emit OwnershipRenounced(owner);
         owner = address(0);
     }
 
   /**
-   * @dev Allows the current owner to transfer control of the contract to a newOwner.
-   * @param _newOwner The address to transfer ownership to.
+   * @dev Allows the current owner to transfer control of the contract to a potentialOwner.
+   * @param pendingOwner The address to transfer ownership to.
    */
-    function transferOwnership(address _newOwner) public onlyOwner {
-        _transferOwnership(_newOwner);
+    function transferOwnership(address pendingOwner) external onlyOwner {
+        require(pendingOwner != address(0), "Potential owner can not be the zero address");
+        potentialOwner = pendingOwner;
+        emit OwnerNominated(pendingOwner);
     }
 
   /**
-   * @dev Transfers control of the contract to a newOwner.
-   * @param _newOwner The address to transfer ownership to.
+   * @dev Accept to transfer control of the contract to a potentialOwner.
    */
-    function _transferOwnership(address _newOwner) internal {
-        require(_newOwner != address(0), "Already owner");
-        emit OwnershipTransferred(owner, _newOwner);
-        owner = _newOwner;
-    }
+    function acceptOwnership() external {
+        require(msg.sender == potentialOwner, "You must be nominated as potential owner before you accept ownership");
+        emit OwnershipTransferred(owner, potentialOwner);
+        owner = potentialOwner;
+        potentialOwner = address(0);
+    } 
 
     //pausable
     event Pause();
@@ -522,7 +512,7 @@ contract Milo is ERC20 {
     mapping(address => bool) internal freezes;
 
     modifier whenNotFrozen() {
-        require(!freezes[msg.sender], "Sender account is locked.");
+        require(!freezes[msg.sender], "Sender account is frozen");
         _;
     }
 
@@ -549,7 +539,7 @@ contract Milo is ERC20 {
       whenNotPaused
       returns (bool)
     {
-        releaseLock(msg.sender);
+        _releaseLock(msg.sender);
         return super.transfer(_to, _value);
     }
 
@@ -562,32 +552,16 @@ contract Milo is ERC20 {
       whenNotPaused
       returns (bool)
     {
-        require(!freezes[_from], "From account is locked.");
-        releaseLock(_from);
+        require(!freezes[_from], "From account is frozen");
+        _releaseLock(_from);
         return super.transferFrom(_from, _to, _value);
-    }
-
-    //mintable
-    event Mint(address indexed to, uint256 amount);
-
-    function mint(
-        address _to,
-        uint256 _amount
-    )
-      public
-      onlyOwner
-      returns (bool)
-    {
-        super._mint(_to, _amount);
-        emit Mint(_to, _amount);
-        return true;
     }
 
     //burnable
     event Burn(address indexed burner, uint256 value);
 
     function burn(address _who, uint256 _value) public onlyOwner {
-        require(_value <= super.balanceOf(_who), "Balance is too small.");
+        require(_value <= super.balanceOf(_who), "Insufficient balance");
 
         _burn(_who, _value);
         emit Burn(_who, _value);
@@ -603,15 +577,20 @@ contract Milo is ERC20 {
     event Lock(address indexed holder, uint256 value, uint256 releaseTime);
     event Unlock(address indexed holder, uint256 value);
 
-    function balanceOf(address _holder) public view returns (uint256 balance) {
+    function balanceOf(address _holder) public view returns (uint256) {
         uint256 lockedBalance = 0;
         for(uint256 i = 0; i < lockInfo[_holder].length ; i++ ) {
             lockedBalance = lockedBalance.add(lockInfo[_holder][i].balance);
         }
         return super.balanceOf(_holder).add(lockedBalance);
+    } 
+
+    function releaseLock() public returns (bool) {
+        _releaseLock(msg.sender);
+        return true;
     }
 
-    function releaseLock(address _holder) internal {
+    function _releaseLock(address _holder) internal {
 
         for(uint256 i = 0; i < lockInfo[_holder].length ; i++ ) {
             if (lockInfo[_holder][i].releaseTime <= now) {
@@ -628,15 +607,18 @@ contract Milo is ERC20 {
             }
         }
     }
+
     function lockCount(address _holder) public view returns (uint256) {
         return lockInfo[_holder].length;
     }
+
     function lockState(address _holder, uint256 _idx) public view returns (uint256, uint256) {
         return (lockInfo[_holder][_idx].releaseTime, lockInfo[_holder][_idx].balance);
     }
 
     function lock(address _holder, uint256 _amount, uint256 _releaseTime) public onlyOwner {
-        require(super.balanceOf(_holder) >= _amount, "Balance is too small.");
+        require(_amount != 0, "Nothing to lock");
+        require(super.balanceOf(_holder) >= _amount, "Insufficient balance");
         _balances[_holder] = _balances[_holder].sub(_amount);
         lockInfo[_holder].push(
             LockInfo(_releaseTime, _amount)
@@ -645,16 +627,11 @@ contract Milo is ERC20 {
     }
 
     function lockAfter(address _holder, uint256 _amount, uint256 _afterTime) public onlyOwner {
-        require(super.balanceOf(_holder) >= _amount, "Balance is too small.");
-        _balances[_holder] = _balances[_holder].sub(_amount);
-        lockInfo[_holder].push(
-            LockInfo(now + _afterTime, _amount)
-        );
-        emit Lock(_holder, _amount, now + _afterTime);
+        lock(_holder, _amount, now.add(_afterTime));
     }
 
     function unlock(address _holder, uint256 i) public onlyOwner {
-        require(i < lockInfo[_holder].length, "No lock information.");
+        require(i < lockInfo[_holder].length, "No lock information");
 
         _balances[_holder] = _balances[_holder].add(lockInfo[_holder][i].balance);
         emit Unlock(_holder, lockInfo[_holder][i].balance);
@@ -667,8 +644,8 @@ contract Milo is ERC20 {
     }
 
     function transferWithLock(address _to, uint256 _value, uint256 _releaseTime) public onlyOwner returns (bool) {
-        require(_to != address(0), "wrong address");
-        require(_value <= super.balanceOf(owner), "Not enough balance");
+        require(_to != address(0), "Invalid address");
+        require(_value <= super.balanceOf(owner), "Insufficient balance");
 
         _balances[owner] = _balances[owner].sub(_value);
         lockInfo[_to].push(
@@ -681,16 +658,7 @@ contract Milo is ERC20 {
     }
 
     function transferWithLockAfter(address _to, uint256 _value, uint256 _afterTime) public onlyOwner returns (bool) {
-        require(_to != address(0), "wrong address");
-        require(_value <= super.balanceOf(owner), "Not enough balance");
-
-        _balances[owner] = _balances[owner].sub(_value);
-        lockInfo[_to].push(
-            LockInfo(now + _afterTime, _value)
-        );
-        emit Transfer(owner, _to, _value);
-        emit Lock(_to, _value, now + _afterTime);
-
+        transferWithLock(_to, _value, now.add(_afterTime));
         return true;
     }
 
@@ -699,6 +667,6 @@ contract Milo is ERC20 {
     }
 
     function afterTime(uint256 _value) public view returns (uint256) {
-        return now + _value;
+        return now.add(_value);
     }
 }
